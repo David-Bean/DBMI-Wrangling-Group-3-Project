@@ -1,4 +1,4 @@
-# Info
+# Information
 
 This is the repository for the DBMI Data wrangling group 3 project. Our goal is to develop and clean a dataset to be used in a hypothetical research study that is investigation the relationship between economic factors and childhood malnutrition around the world.
 
