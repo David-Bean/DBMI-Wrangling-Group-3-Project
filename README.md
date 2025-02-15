@@ -4,6 +4,10 @@ This is the repository for the DBMI Data wrangling group 3 project. Our goal is 
 
 See the Project Proposal pdf for details
 
-# Resource
+# Resources
 
 [Github Instructional Video](https://www.youtube.com/watch?v=RGOj5yH7evk)
+
+[World Bank Data Repository](https://databank.worldbank.org/home.aspx)
+
+[World Food Programme Database](https://dataviz.vam.wfp.org/)
