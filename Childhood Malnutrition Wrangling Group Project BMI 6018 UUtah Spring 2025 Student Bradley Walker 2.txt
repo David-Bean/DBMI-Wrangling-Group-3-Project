@@ -1,0 +1,396 @@
+--CREATE DATABASE childhood_malnutrition;
+--for purposes of debugging recreate table
+DROP TABLE IF EXISTS participant;
+CREATE TABLE participant (
+Country TEXT, --name of country where screening is taking place
+Stake TEXT, --faith-based geographic name where screening is taking place
+childIndex INTEGER, --each child screened is given an index ID within each "stake" or geographic
+--or congregational unit where screening is taking place
+stakedbname TEXT, --derived; is a combo of Country and Stake to use in data analysis 
+--one instead of 2 columns
+screenCount INTEGER, --number of times child is screened with the highest number 
+--being the earliest screening and "1" being the last screening
+gender TEXT, --Boy or Girl
+lds TEXT, --religious self-identification
+screenId TEXT, --appears to have been intended to be a primary key, but...
+--where more than one screening entry took place on same day it did not increment
+--so ended up NOT being a primary key; useful in identifying duplicate entries
+screenDate TEXT, --self-explanatory; can be converted to just a YEAR-Month-Day format using DATE function
+--Duplicates allowed/present; sometimes could be 2nd/3rd/higher height and weight obtained same day
+--but probably more often is just unintentional double entry of the same screening data
+weight NUMERIC, --child's weight in kg at screening
+height NUMERIC, --child's height in cm at screening
+age NUMERIC, --child's age in months at screening
+obese TEXT, --true/false answer given based on weight per height (BMI); is derived
+ha NUMERIC, --height z-score; is derived using height, weight, age, gender (DOB was removed 
+--from data for de-identification but can be calculated using age with some difficulty)
+wa NUMERIC, --weight z-score; is derived
+wh NUMERIC, --weight/height z-score also known as BMI
+status TEXT, --nutritional status on date of screening as to whether needs
+--treatment; is derived; does not define treatment see added column malnutrition_classification
+--for that
+muac NUMERIC, --experimental to see if parents would be able to accurately
+--calculate MUAC scores (they were not anywhere near competent to perform it)
+PRIMARY KEY (Country, Stake, childIndex, screenCount) 
+);
+
+--create additional participant columns for classification of row errors and malnutrition status
+ALTER TABLE participant ADD COLUMN row_error_type INTEGER; 
+ALTER TABLE participant ADD COLUMN malnutrition_classification TEXT;
+
+--create malnutrition classification which is used to determine treatment for child
+UPDATE participant SET malnutrition_classification = 'Normal';
+UPDATE participant SET malnutrition_classification = 'At Risk'
+WHERE wa < -1 OR ha < -1 OR wh < -1;
+UPDATE participant SET malnutrition_classification = 'Stunted'
+WHERE (wa < -2 OR ha < -2) AND wh < 0;
+UPDATE participant SET malnutrition_classification = 'Severely Stunted'
+WHERE (wa < -3 OR ha < -3) AND wh < 0;
+UPDATE participant SET malnutrition_classification = 'MAM'
+WHERE wh < -2;
+UPDATE participant SET malnutrition_classification = 'SAM'
+WHERE wh < -3;
+
+--Identify and flag rows with nulls
+SELECT * FROM participant WHERE stakedbname = ''; --No nulls
+SELECT * FROM participant WHERE gender = ''; --No nulls
+SELECT * FROM participant WHERE lds = '' OR lds = 'Unknown'; --7535 nulls/Unknowns
+--here OK to use rows but eliminate rows if using for analysis of 
+--lds vs non-LDS OR in multivariate analysis
+SELECT * FROM participant WHERE screenID = ''; --no nulls
+SELECT * FROM participant WHERE weight = ''; --756 rows need to be flagged as analysis not possible
+SELECT * FROM participant WHERE height = ''; --757 nearly same rows as weight and same flag applied
+SELECT * FROM participant WHERE age = ''; --no nulls
+SELECT * FROM participant WHERE obese = ''; --no nulls
+SELECT * FROM participant WHERE ha = '' AND (row_error_type = 1 OR row_error_type = -4);
+--8 rows affected all of which are already flagged under poor Stake performace flag
+--Answer for wa, wh exact same as for ha
+--end of null classification SQL searches; rest derived or have nulls by design (muac)--
+
+--set initial value for row_error_type;
+UPDATE participant SET row_error_type = 1;
+--classify row_error_type
+--1=Normal,-1=Nulls,-2=Outliers,-3=Duplicates,-4=missing lds classification, -5=Haiti Test data;
+UPDATE participant SET row_error_type = -1 WHERE weight = '' OR height = '';
+SELECT COUNT(*) FROM participant WHERE row_error_type = -1;  --758 rows
+UPDATE participant SET row_error_type = -4 WHERE lds = '' OR lds = 'Unknown'
+AND row_error_type = 1;
+SELECT COUNT(*) FROM participant WHERE row_error_type = -4;  --2325 rows instead of 2335
+UPDATE participant SET row_error_type = -5 WHERE Stake = 'Haiti Test';
+UPDATE participant SET row_error_type = -1 WHERE gender <> 'Boy' AND  gender <> 'Girl';
+--See section on categorical outliers
+SELECT COUNT(*) FROM participant WHERE row_error_type = -1;
+
+--Identify incorrect or odd column values for categorical variables (or categorical outliers)
+SELECT Country, COUNT(*) FROM participant 
+WHERE row_error_type = 1 or row_error_type = -4 GROUP BY Country; -- no unexpected values
+SELECT Stake, COUNT(*) FROM participant 
+WHERE row_error_type = 1 or row_error_type = -4 GROUP BY Stake; --no unexpected values
+SELECT childIndex, COUNT(*) FROM participant 
+WHERE row_error_type = 1 or row_error_type = -4 GROUP BY childIndex; --no unexpected values
+SELECT stakedbname, COUNT(*) FROM participant 
+WHERE row_error_type = 1 or row_error_type = -4 GROUP BY stakedbname; --no unexpected values
+SELECT screenCount, COUNT(*) FROM participant 
+WHERE row_error_type = 1 or row_error_type = -4 GROUP BY screenCount; --no unexpected values
+SELECT gender, COUNT(*) FROM participant 
+WHERE row_error_type = 1 or row_error_type = -4 GROUP BY gender; --see below to see unexpected values
+
+--gender	COUNT(*)
+
+--Boy		90029
+--Chico		3
+--F		7
+--Girl		88865
+--Girl 		1	Why is there a separate category for "Girl" with only 1 row?  I don't know
+--M		14	Maybe "white space"?
+
+--Impossible to say if the errors caused miscalculation of Z-scores; will Flag as outliers 
+--(25 total rows)
+ 
+SELECT lds, COUNT(*) FROM participant 
+WHERE row_error_type = 1 or row_error_type = -4 GROUP BY lds;
+
+--lds		COUNT(*)
+--		2301
+--No		82735
+--Unknown	5181   --will ad Unknown to above flag for lds "missing"
+--Yes		88677
+
+ 
+SELECT screenID, malnutrition_classification, COUNT(*) FROM participant 
+WHERE row_error_type = 1 or row_error_type = -4 GROUP BY screenID; 
+--9000 duplicated values of screenID, 8983 with 2 duplicates and 17 with 4 duplicates
+--these are exact row duplicates of all values including to the second on the time EXCEPT
+--for the stake and stakedbname.  This is only possible with a very unusual episodic 
+--programming error or more worrisome, with fraud.  What to say?  
+--All these rows (not just the minimum) will be marked as duplicates  
+--Query to update column row_error_type
+UPDATE participant SET row_error_type = -3 WHERE screenID IN (
+SELECT screenID FROM participant 
+WHERE row_error_type = 1 or row_error_type = -4 GROUP BY screenID
+HAVING COUNT(*) > 1
+);
+--18,000+ (more than 10% of rows) removed for most analyses, although almost 100% had 
+--outliers in addition to duplicates; they were all flagged to not use for analyses
+
+SELECT DATE(screenDate), COUNT(*) FROM participant 
+WHERE row_error_type = 1 or row_error_type = -4 GROUP BY DATE(screenDate); 
+--no unexpected values
+
+--WEIGHT AND HEIGHT (weight, height) are analyzed in their Z-score form (wa, ha, wh)
+--not separately from Z-scores
+
+--age has many inappropriate entries as it was supposed to used only between
+--6--60 months but was used in some cases the month before birth and after 60 months
+--here 4290 rows were flagged for being outliers using directly below query
+UPDATE participant SET row_error_type = -2 WHERE age IN
+(SELECT age FROM participant 
+WHERE (row_error_type = 1 or row_error_type = -4)
+AND (age < 6 OR age > 60) GROUP BY age ORDER BY age);
+
+SELECT obese, COUNT(*) FROM participant GROUP BY obese;
+--FALSE		139487
+--TRUE		25890
+--undefined	14316
+
+--I was told obesity was never used or "fixed" but a quick look at it states it was unusable
+--Here we'll leave it alone and not flag rows based on its values as it is not used
+--for any calculations
+
+--set outlier flags for z-scores wa, ha, wh
+UPDATE participant SET row_error_type =  -2 WHERE 
+wa < -5 OR wa > 2 OR ha < -5 OR ha > 2 OR wh < -5 OR wh > 2;
+
+--Number of rows for each Country/Stake combination needed to perform calculations
+--calculation of percentage of row removed for nulls, outliers, and duplicates
+DROP TABLE IF EXISTS number_rows;
+CREATE TABLE number_rows(
+Country text,
+Stake text, 
+number_rows_Country_Stake NUMERIC
+);
+INSERT INTO number_rows SELECT Country, Stake, COUNT(*) AS number_rows_Country_Stake 
+FROM participant GROUP BY Country, Stake;
+SELECT * FROM number_rows;
+
+DROP TABLE IF EXISTS number_rows1;
+CREATE TABLE number_rows1(
+Country text,
+Stake text, 
+number_rows_Country_Stake1 NUMERIC
+);
+INSERT INTO number_rows1 SELECT Country, Stake, COUNT(*) AS number_rows_County_Stake1 
+FROM participant WHERE  row_error_type = 1 or row_error_type = -4 GROUP BY Country, Stake;
+SELECT * FROM number_rows1;
+
+--Calculate error rates in each stake geographic location and 
+--flag entire stake as outlier if error rates > 40% and don't use 
+--data from those stakes for analyses
+DROP TABLE IF EXISTS temp;
+CREATE TABLE IF NOT EXISTS temp AS SELECT participant.Country, participant.Stake, 
+number_rows_Country_Stake,number_rows_Country_Stake1,
+(number_rows_Country_Stake1 * 1.0)/(number_rows_Country_Stake * 1.0) 
+AS non_error_rate_stake FROM participant, number_rows, number_rows1 
+WHERE participant.Country = number_rows.Country 
+AND participant.Stake = number_rows.Stake
+AND participant.Country = number_rows1.Country 
+AND participant.Stake = number_rows1.Stake
+GROUP BY participant.Country, participant.Stake;
+
+
+SET row_error_type = -2 FROM participant WHERE Stake IN 
+(SELECT Stake FROM temp WHERE non_error_rate < 0.60);
+
+SELECT * FROM temp; --data not copied here from the query b/c 243 rows; 
+--could see by executing code
+
+--1=Normal,-1=Nulls,-2=Outliers,-3=Duplicates,-4=missing lds classification, -5=Haiti Test data;
+SELECT row_error_type, COUNT(*) FROM participant GROUP BY row_error_type 
+ORDER BY row_error_type DESC; 
+--row_error_type	COUNT(*)
+--	 1		108055
+--	-1		3
+--	-2		64330
+--	-3		1972
+--	-4		5327
+--	-5		6
+--Number of usable rows = 108,055 + 5327 = 113,382
+--Total number of rows = 179,693
+--Percent of rows usable = 113,382/179,693 X 100 = 63.1%
+--Of outliers(-2), 23,410 were too "high", and of those 23,410, 
+--8212 rows also had a value too "low" (or "double wrong")
+--The biggest issue was obtaining accurate heights and weights by far
+--and that issue should be am emphasis in the future; 
+--having height/weights obtained by 2 people is that start of fixing this issue
+--Just as important would be flagging the row during data capture and forcing 
+--re-measurements rather than allowing entry of outliers
+--This advice is also important for nulls and duplicates (duplicates within same Stake)
+--The rows should also list who input the data and re-train or disallow individuals
+--who do not demonstrate technical proficiency in capture and data entry of height/weight
+--It's better to prevent entry of incorrect data than fix it
+--in this case it can't be fixed post-hoc and I assume that's often the case
+--The methodology used to analyze the dataset without data wrangling was to simply select
+--the data points where values were outliers.  This was quite similar to what the wrangling
+--assignment produced, so the results are quite similar to the original results.
+--As for the initial question of whether this dataset needed wrangling,
+--it should be obvious that the answer was yes.
+
+--Identification and flagging of row with nulls/outliers/duplicates is finished
+--EDA will continue 1st creating percentiles on Z-scores/means on Z-scores wa, ha, wh
+--Then examine the initial status of the children and where available response to treatment
+
+DROP TABLE IF EXISTS temp;
+CREATE TABLE temp(
+percentile text,
+wa numeric
+); 
+INSERT INTO temp SELECT 'placeholder', wa FROM participant WHERE  row_error_type = 1 or row_error_type = -4 ORDER BY wa;
+
+DROP TABLE IF EXISTS temp1;
+CREATE TABLE temp1(
+percentile text,
+wa numeric
+); 
+
+--Calculate percentiles and averages for Z-scores wa, ha, wh(bmi)
+INSERT INTO temp1 SELECT '1st percentile or MIN', MIN(wa) FROM temp;
+INSERT INTO temp1 SELECT '20th percentile', wa FROM temp WHERE rowid = round(113382*0.2);
+INSERT INTO temp1 SELECT '40th percentile', wa FROM temp WHERE rowid = round(113382*0.4);
+INSERT INTO temp1 SELECT '50th percentile or MEDIAN', wa FROM temp WHERE rowid = round(113382*0.5);
+INSERT INTO temp1 SELECT 'Average Weight', AVG(wa) FROM temp;
+INSERT INTO temp1 SELECT '60th percentile', wa FROM temp WHERE rowid = round(113382*0.6);
+INSERT INTO temp1 SELECT '80th percentile', wa FROM temp WHERE rowid = round(113382*0.8);
+INSERT INTO temp1 SELECT '99th percentile or MAX', MAX(wa) FROM temp;
+SELECT * FROM temp1;
+
+--Percentile			Weight/Age	Height/Age	Weight/Height(BMI)
+--1st percentile or MIN		-4.99		-4.99		-4.99
+--20th percentile		-2.59		-3.12		-2.49
+--40th percentile		-1.94		-2.33		-0.57
+--50th percentile/MEDIAN	-1.66		-1.98		-1.27
+--Average Weight		-1.66		-1.89		-0.88
+--60th percentile		-1.38		-1.62		+0.59
+--80th percentile		-0.72		-0.71		+1.71
+--99th percentile or MAX	+1.99		+1.99		+1.99
+
+DROP TABLE IF EXISTS temp;
+CREATE TABLE temp(
+percentile text,
+ha numeric
+); 
+INSERT INTO temp SELECT 'placeholder', ha FROM participant WHERE  row_error_type = 1 or row_error_type = -4 ORDER BY ha;
+
+DROP TABLE IF EXISTS temp1;
+CREATE TABLE temp1(
+percentile text,
+ha numeric
+); 
+
+--Calculate percentiles and averages for Z-scores wa, ha, wh(bmi)
+INSERT INTO temp1 SELECT '1st percentile or MIN', MIN(ha) FROM temp;
+INSERT INTO temp1 SELECT '20th percentile', ha FROM temp WHERE rowid = round(113382*0.2);
+INSERT INTO temp1 SELECT '40th percentile', ha FROM temp WHERE rowid = round(113382*0.4);
+INSERT INTO temp1 SELECT '50th percentile or MEDIAN', ha FROM temp WHERE rowid = round(113382*0.5);
+INSERT INTO temp1 SELECT 'Average Weight', AVG(ha) FROM temp;
+INSERT INTO temp1 SELECT '60th percentile', ha FROM temp WHERE rowid = round(113382*0.6);
+INSERT INTO temp1 SELECT '80th percentile', ha FROM temp WHERE rowid = round(113382*0.8);
+INSERT INTO temp1 SELECT '99th percentile or MAX', MAX(ha) FROM temp;
+SELECT * FROM temp1;
+
+DROP TABLE IF EXISTS temp;
+CREATE TABLE temp(
+percentile text,
+wh numeric
+); 
+INSERT INTO temp SELECT 'placeholder', wh FROM participant WHERE  row_error_type = 1 or row_error_type = -4 ORDER BY wa;
+
+DROP TABLE IF EXISTS temp1;
+CREATE TABLE temp1(
+percentile text,
+wh numeric
+); 
+
+--Calculate percentiles and averages for Z-scores wa, ha, wh(bmi)
+INSERT INTO temp1 SELECT '1st percentile or MIN', MIN(wh) FROM temp;
+INSERT INTO temp1 SELECT '20th percentile', wh FROM temp WHERE rowid = round(113382*0.2);
+INSERT INTO temp1 SELECT '40th percentile', wh FROM temp WHERE rowid = round(113382*0.4);
+INSERT INTO temp1 SELECT '50th percentile or MEDIAN', wh FROM temp WHERE rowid = round(113382*0.5);
+INSERT INTO temp1 SELECT 'Average Weight', AVG(wh) FROM temp;
+INSERT INTO temp1 SELECT '60th percentile', wh FROM temp WHERE rowid = round(113382*0.6);
+INSERT INTO temp1 SELECT '80th percentile', wh FROM temp WHERE rowid = round(113382*0.8);
+INSERT INTO temp1 SELECT '99th percentile or MAX', MAX(wh) FROM temp;
+SELECT * FROM temp1;
+
+--Calculate frequencies of different malnutrition classifications in screened population
+SELECT malnutrition_classification, COUNT(*), 
+(COUNT(*) * 1.0)/(113382*1.0) AS malnutrition_class_frequency
+FROM participant WHERE row_error_type = 1 OR row_error_type = -4 
+GROUP BY malnutrition_classification;
+
+malnutrition_classification	COUNT(*)	malnutrition_class_frequency
+At Risk				26000		0.23
+MAM				16858		0.15
+Normal				11522		0.10
+SAM				8784		0.08
+Severely Stunted		21974		0.19
+Stunted				28244		0.25
+
+DROP TABLE IF EXISTS temp;
+CREATE TABLE IF NOT EXISTS temp AS SELECT Country, Stake, childIndex, COUNT(*) AS screenCount_number_total_times
+FROM participant WHERE  row_error_type = 1 or row_error_type = -4 
+GROUP BY Country, Stake, ChildIndex 
+HAVING COUNT(*) > 1 ORDER BY Country, Stake, childIndex;
+
+ALTER TABLE temp ADD COLUMN last_wa_measurement;
+ALTER TABLE temp ADD COLUMN first_wa_measurement;
+ALTER TABLE temp ADD COLUMN last_ha_measurement;
+ALTER TABLE temp ADD COLUMN first_ha_measurement;
+ALTER TABLE temp ADD COLUMN last_wh_measurement;
+ALTER TABLE temp ADD COLUMN first_wh_measurement;
+
+--Calculate average change in Z-scores wa,ha, wh
+UPDATE temp SET last_wa_measurement = wa FROM participant 
+WHERE temp.Country = participant.Country
+AND temp.Stake = participant.Stake
+AND temp.childIndex = participant.childIndex
+AND screenCount = 1;
+
+UPDATE temp SET first_wa_measurement = wa FROM participant 
+WHERE temp.Country = participant.Country
+AND temp.Stake = participant.Stake
+AND temp.childIndex = participant.childIndex
+AND screenCount = screenCount_number_total_times;
+
+UPDATE temp SET last_ha_measurement = ha FROM participant 
+WHERE temp.Country = participant.Country
+AND temp.Stake = participant.Stake
+AND temp.childIndex = participant.childIndex
+AND screenCount = 1;
+
+UPDATE temp SET first_ha_measurement = ha FROM participant 
+WHERE temp.Country = participant.Country
+AND temp.Stake = participant.Stake
+AND temp.childIndex = participant.childIndex
+AND screenCount = screenCount_number_total_times;
+
+UPDATE temp SET last_wh_measurement = wh FROM participant 
+WHERE temp.Country = participant.Country
+AND temp.Stake = participant.Stake
+AND temp.childIndex = participant.childIndex
+AND screenCount = 1;
+
+UPDATE temp SET first_wh_measurement = wh FROM participant 
+WHERE temp.Country = participant.Country
+AND temp.Stake = participant.Stake
+AND temp.childIndex = participant.childIndex
+AND screenCount = screenCount_number_total_times;
+
+SELECT AVG(last_wa_measurement - first_wa_measurement) AS average_overall_change_wa,
+AVG(last_ha_measurement - first_ha_measurement) AS average_overall_change_ha,
+AVG(last_wh_measurement - first_wh_measurement) AS average_overall_change_wh
+FROM temp;
+
+average_overall_change_wa	average_overall_change_ha	average_overall_change_wh
+0.79089648737574		0.22028964982151		0.34460649441802
+
+
