@@ -1,57 +1,39 @@
+# Import libraries
 import pandas as pd
 import numpy as np
-import openpyxl
-import matplotlib
-import matplotlib.pyplot as plt
-
 import os
 from os import listdir
 import pathlib
 
+## This file processes world bank data from a directory and outputs a .csv file containing
+## only data for countries and years of interest. Output is a dataframe where each entry is
+## a dictionary with years as keys and economic data as values.
 
-GDP_df = pd.read_csv('Economic Indicators/GDP Per Capita/GDP_PC.csv', index_col=1, skiprows=4)
-print(GDP_df.shape)
-print(GDP_df.iloc[:,0:3])
-
+# Create list of years containing the full date range for clinical data (may need to be adjusted)
 years_list = ['2010','2011','2012','2013','2014','2015','2016','2017','2018','2019','2020']
-GDP_df = GDP_df.loc[:, years_list]
-nations_list = GDP_df.index.to_list()
-print(GDP_df.iloc[:,0:3])
 
-GDP_dict = pd.Series(GDP_df.to_dict(orient='records'))
-GDP_dict = GDP_dict.set_axis(nations_list)
-print(GDP_dict)
-
+# Create list of country codes for each nation in the clinical study
 data_nations = ['BOL','COL','ECU','GHA','GTM','HND','HTI','KHM','KIR','LBR','MDG','MNG',
                 'NGA','NIC','PER','PHL','PRY','SLV','VEN','SLE','ZWE']
 
-GDP_subset = GDP_dict.loc[data_nations]
-print(GDP_subset)
-GDP_subset_2 = GDP_subset.copy()
-print(GDP_subset_2)
-
-test_df1 = pd.DataFrame(index=data_nations)
-print(test_df1)
-test_df1['A'] = GDP_subset
-test_df1['B'] = GDP_subset_2
-print(test_df1)
-
+# Specify directory
 file_path_1 = 'Economic Indicators/All_Indicators'
 
+# Check files in directory
 files = [f for f in pathlib.Path(file_path_1).iterdir() if f.is_file()]
 print(files)
 
-
-
+# Function to process data from dataframe and return dictionary of key:value pairs for each year
 def process_edata(input_df):
     input_df = input_df.loc[:, years_list]
     df_dict = pd.Series(input_df.to_dict(orient='records'))
+    nations_list = input_df.index.to_list()
     df_series = df_dict.set_axis(nations_list)
     df_series = df_series.loc[data_nations]
     return df_series
 
+# Function to process data from all files in directory and combine in single dataframe
 def process_files(file_path):
-    all_data = []
     add_df = pd.DataFrame(index=data_nations)
     files_lst = [f for f in pathlib.Path(file_path).iterdir() if f.is_file()]
     for f in files_lst:
@@ -63,10 +45,11 @@ def process_files(file_path):
         add_df[file_name] = indicator_col
     return add_df
 
-
+# Process combined dataframe
 combined_df = process_files(file_path_1)
+
+# Rename country indices to match clinical data
 combined_df.rename(index={'SLE':'WAL','LBR':'LIB'}, inplace=True)
 
-print(combined_df)
-
+# Write to .csv file
 combined_df.to_csv('all_econ_data.csv')
